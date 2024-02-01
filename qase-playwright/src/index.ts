@@ -27,6 +27,7 @@ enum Envs {
     runComplete = 'QASE_RUN_COMPLETE',
     environmentId = 'QASE_ENVIRONMENT_ID',
     uploadAttachments = 'QASE_UPLOAD_ATTACHMENTS',
+    updateAfterEachTest = 'QASE_UPDATE_AFTER_EACH_TEST'
 }
 
 const Statuses = {
@@ -50,6 +51,7 @@ interface QaseOptions {
     runComplete?: boolean;
     environmentId?: number;
     uploadAttachments?: boolean;
+    updateAfterEachTest?: boolean;
 }
 
 let customBoundary = '----------------------------';
@@ -79,6 +81,7 @@ class PlaywrightReporter implements Reporter {
         this.options = _options;
         this.options.runComplete = !!PlaywrightReporter.getEnv(Envs.runComplete) || this.options.runComplete;
         this.options.uploadAttachments = !!PlaywrightReporter.getEnv(Envs.uploadAttachments) || this.options.uploadAttachments;
+        this.options.updateAfterEachTest = !!PlaywrightReporter.getEnv(Envs.updateAfterEachTest) || this.options.updateAfterEachTest;
         this.options.rootSuiteTitle = _options.rootSuiteTitle || PlaywrightReporter.getEnv(Envs.rootSuiteTitle) || '';
         this.options.projectCode = _options.projectCode || PlaywrightReporter.getEnv(Envs.projectCode) || '';
 
@@ -414,7 +417,7 @@ class PlaywrightReporter implements Reporter {
         }
     }
 
-    private prepareCaseResult(test: TestCase, testResult: TestResult, attachments: any[]) {
+    private async prepareCaseResult(test: TestCase, testResult: TestResult, attachments: any[]) {
         this.queued--;
         this.logTestItem(test, testResult);
         const caseIds = this.getCaseIds(test);
@@ -428,6 +431,8 @@ class PlaywrightReporter implements Reporter {
                 ? attachments
                 : undefined,
             defect: Statuses[testResult.status] === Statuses.failed,
+
+        
         };
 
         if (caseIds.length === 0) {
@@ -456,6 +461,45 @@ class PlaywrightReporter implements Reporter {
                     chalk`{gray Result prepared for publish: ${test.title} }${add}`
                 );
             });
+        }
+
+        if(!this.options.updateAfterEachTest)
+            return;
+
+        const body = {
+            results: this.resultsToBePublished,
+        };
+
+        try {
+            await this.api.results.createResultBulk(
+                this.options.projectCode,
+                Number(this.runId),
+                body
+            );
+
+            this.log(chalk`{green ${this.resultsToBePublished.length} result(s) sent to Qase}`);
+
+            if (!this.options.runComplete) {
+                return;
+            }
+
+            try {
+                await this.api.runs.completeRun(this.options.projectCode, Number(this.runId));
+                this.log(chalk`{green Run ${this.runId} completed}`);
+            } catch (err) {
+                this.log(`Error on completing run ${err as string}`);
+            }
+
+            this.log(chalk`{blue https://app.qase.io/run/${this.options.projectCode}/dashboard/${this.runId}}`);
+        } catch (error) {
+            // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unnecessary-type-assertion
+            const err: any = error as any;
+            this.log(chalk`{red Unable to send results into Qase. ${err}}`);
+
+            if (err?.response?.status >= 400 && err?.response?.status < 500) {
+                this.log(chalk`{red Erorr message: ${err?.response?.data?.errorMessage}}`);
+                this.log(chalk`{red Erorrs: ${JSON.stringify(err?.response?.data?.errorFields)}}`);
+            }
         }
     }
 }
